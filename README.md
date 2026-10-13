@@ -1,6 +1,6 @@
 # Iron Dominion: a three.js Command & Conquer-style RTS
 
-Everything is procedural geometry, written as plain ES modules with no build step and no external assets. three.js r170 comes from jsdelivr through an import map.
+Everything is procedural (geometry, canvas-generated PBR textures, baked 2048² terrain splat, instanced vegetation, particle FX), written as plain ES modules with no build step and no external assets. Visual-only code lives in `js/textures.js`, `js/models.js`, `js/fx.js`, `js/geom.js` and the `Terrain` class; gameplay logic is unchanged. three.js r170 comes from jsdelivr through an import map.
 
 ## Run
 ```

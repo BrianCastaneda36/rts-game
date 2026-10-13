@@ -1,7 +1,9 @@
 import { THREE } from './T.js';
 import { Terrain, heightAt, rayGround, BASES, ORE_FIELDS } from './terrain.js';
 import { BUILD, UNIT, MULT } from './defs.js';
-import { makeMesh, makeGhost, setGhostValid, geo, mat } from './models.js';
+import { makeMesh, makeGhost, setGhostValid, makeOre, geo, mat } from './models.js';
+import { FX } from './fx.js';
+import { skyEnv } from './textures.js';
 import { Commander } from './ai/commander.js';
 import { makeTraits, decideUnit } from './ai/personality.js';
 import { UI } from './ui.js';
@@ -15,9 +17,19 @@ export class Game {
   constructor(renderer, rendererName) {
     this.renderer = renderer; this.rendererName = rendererName;
     const scene = this.scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x9cc3e6);
-    scene.add(new THREE.HemisphereLight(0xdfefff, 0x4a5a3a, 1.3));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.7); sun.position.set(60, 120, 40); scene.add(sun);
+    // renderer: ACES tone mapping, sRGB output, soft shadows (works for WebGL and WebGPURenderer)
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const fogCol = new THREE.Color(0xb7cde0);
+    scene.background = fogCol; scene.fog = new THREE.Fog(fogCol, 140, 330);
+    scene.environment = skyEnv(); if ('environmentIntensity' in scene) scene.environmentIntensity = 0.45;
+    scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x5a5a40, 0.9));
+    const sun = this.sun = new THREE.DirectionalLight(0xfff1dc, 3.0); sun.position.set(60, 110, 40);
+    sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.04;
+    Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 320 }); sun.shadow.camera.updateProjectionMatrix();
+    scene.add(sun); scene.add(sun.target);
+    this.fx = new FX(scene);
     this.camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 1200);
     this.camTarget = new THREE.Vector3(BASES[0].x + 12, 0, BASES[0].z - 12); this.camDist = 65;
     this.terrain = new Terrain(scene);
@@ -39,8 +51,8 @@ export class Game {
     for (const f of ORE_FIELDS) for (let i = 0; i < 14; i++) {
       const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * 8;
       const x = f.x + Math.cos(a) * rr, z = f.z + Math.sin(a) * rr;
-      const m = new THREE.Mesh(g.oct, mat(0xf2c230)); m.position.set(x, heightAt(x, z) + 0.4, z);
-      m.rotation.set(Math.random(), Math.random() * 3, 0); this.scene.add(m);
+      const m = makeOre(this.ore.length); m.position.set(x, heightAt(x, z) - 0.05, z);
+      m.rotation.set(0, Math.random() * 6.28, 0); this.scene.add(m);
       this.ore.push({ pos: m.position, amount: 500, max: 500, mesh: m });
     }
   }
@@ -241,18 +253,25 @@ export class Game {
   }
   fire(u, t) {
     const P = PROJ[u.def.weapon];
-    const m = new THREE.Mesh(geo().sph, mat(P.color, true)); m.scale.setScalar(P.size * 2);
-    const f = u.def.muzzle || 1; m.position.set(u.pos.x, u.pos.y + f, u.pos.z); this.scene.add(m);
+    const m = this.makeProjectile(u.def.weapon);
+    const f = u.def.muzzle || 1; m.position.set(u.pos.x, u.pos.y + f, u.pos.z);
+    const ud = u.mesh.userData;
+    if (ud.muzzle) { u.mesh.updateMatrixWorld(true); ud.muzzle.getWorldPosition(m.position); }
+    ud.recoil = 1; this.scene.add(m);
     this.projectiles.push({ mesh: m, target: t, attacker: u, team: u.team, dmg: u.def.dmg, weapon: u.def.weapon, P, aim: t.pos.clone() });
-    if (u.def.weapon !== 'bullet') this.effect(m.position, 0.5, 0xffffaa, 0.15);
+    const dir = new THREE.Vector3(t.pos.x - u.pos.x, 0, t.pos.z - u.pos.z).normalize();
+    this.fx.muzzle(m.position, dir, u.def.weapon !== 'bullet');
   }
   updateProjectiles(dt) {
     for (const p of this.projectiles) {
       if (!p.target.dead) p.aim.set(p.target.pos.x, p.target.pos.y + (p.target.isBuilding ? 1.5 : 0.6), p.target.pos.z);
       const pos = p.mesh.position; tmp.subVectors(p.aim, pos); const L = tmp.length(), step = p.P.speed * dt;
       if (p.weapon === 'rocket') p.mesh.position.y += Math.sin(this.time * 30) * 0.05;
+      if (L > 0.01) p.mesh.lookAt(p.aim);
+      if (p.weapon !== 'bullet') { p.tr = (p.tr || 0) + dt; if (p.tr > 0.025) { p.tr = 0; this.fx.trail(pos, p.weapon === 'rocket'); } }
       if (L <= step) {
-        p.done = true; this.scene.remove(p.mesh); this.effect(p.aim, p.P.boom, 0xff7a22, 0.35);
+        p.done = true; this.scene.remove(p.mesh);
+        if (p.weapon === 'bullet') this.fx.explosion(p.aim, 0.25, { scorch: false }); else this.fx.explosion(p.aim, p.P.boom * 0.7, { debris: 2 });
         if (!p.target.dead) {
           const arm = p.target.isBuilding ? 'bld' : p.target.def.armor;
           this.damage(p.target, p.dmg * MULT[p.weapon][arm] * (0.8 + Math.random() * 0.4), p.attacker, p.team);
@@ -269,12 +288,26 @@ export class Game {
   }
   kill(e) {
     e.dead = true; this.scene.remove(e.mesh); this.selected.delete(e);
-    this.effect(e.pos, e.isBuilding ? e.r * 2.2 : (e.def.armor === 'veh' ? 2.5 : 1), 0xff5511, e.isBuilding ? 1.2 : 0.6);
-    if (e.isBuilding) for (let i = 0; i < 5; i++) this.effect(new THREE.Vector3(e.pos.x + (Math.random() - .5) * e.r * 2, e.pos.y + 1, e.pos.z + (Math.random() - .5) * e.r * 2), 2.5, 0x553322, 1.5);
+    const veh = !e.isBuilding && e.def.armor === 'veh';
+    this.fx.explosion(e.pos, e.isBuilding ? e.r * 0.9 : (veh ? 1.8 : 0.6), { debris: e.isBuilding ? 24 : veh ? 12 : 0 });
+    if (e.isBuilding) for (let i = 0; i < 5; i++) this.fx.explosion(new THREE.Vector3(e.pos.x + (Math.random() - .5) * e.r * 2, e.pos.y + 1, e.pos.z + (Math.random() - .5) * e.r * 2), 1.6, { debris: 3 });
     if (e.wave) this.commander.removeFromWave(e);
   }
+  makeProjectile(w) {
+    if (!this.projGeo) {
+      const g = geo();
+      this.projGeo = {
+        bullet: [new THREE.BoxGeometry(0.06, 0.06, 1.6), new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })],
+        shell: [g.sph, new THREE.MeshBasicMaterial({ color: 0xffd27a })],
+        rocket: [new THREE.CylinderGeometry(0.07, 0.07, 0.7, 8).rotateX(Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x6b6f5a, roughness: 0.5, metalness: 0.5 })],
+      };
+    }
+    const [gg, mm] = this.projGeo[w], m = new THREE.Mesh(gg, mm);
+    if (w === 'shell') m.scale.set(0.22, 0.22, 0.6);
+    return m;
+  }
   effect(p, size, color, life) {
-    const m = new THREE.Mesh(geo().sph, mat(color, true, 0.75)); m.position.copy(p); m.scale.setScalar(0.01); this.scene.add(m);
+    const m = new THREE.Mesh(geo().ring, mat(color, true, 0.75)); m.rotation.x = -Math.PI / 2; m.position.set(p.x, heightAt(p.x, p.z) + 0.25, p.z); m.scale.setScalar(0.01); this.scene.add(m);
     this.effects.push({ mesh: m, size, life, t: 0 });
   }
   updateEffects(dt) {
@@ -301,9 +334,37 @@ export class Game {
   frame() {
     const now = performance.now(), dt = Math.min(0.05, (now - this.last) / 1000); this.last = now;
     if (!this.over) this.update(dt); else this.updateEffects(dt);
-    this.updateCamera(dt); this.updateGhost();
+    this.updateCamera(dt); this.updateGhost(); this.updateVisuals(dt);
     this.renderer.render(this.scene, this.camera);
     this.ui.update(dt); this.ui.drawOverlay();
+  }
+
+  // ---------- visuals only (no gameplay state is touched here) ----------
+  updateVisuals(dt) {
+    const vt = (this.vt = (this.vt || 0) + dt), fx = this.fx;
+    for (const e of this.entities) {
+      if (e.dead) continue;
+      const ud = e.mesh.userData, lp = ud.lp || (ud.lp = e.pos.clone());
+      const sp = dt > 0 ? Math.hypot(e.pos.x - lp.x, e.pos.z - lp.z) / dt : 0; lp.copy(e.pos);
+      ud.spd = (ud.spd || 0) + (sp - (ud.spd || 0)) * Math.min(1, dt * 10);
+      if (ud.animate) ud.animate(dt, { t: vt, speed: ud.spd, e });
+      if (e.isBuilding && e.constructing) { if (Math.random() < dt * 10) fx.dust(e.pos, e.r); if (Math.random() < dt * 8) fx.spark(e.pos, e.r * 0.8); }
+      else if (ud.smoke && ud.smoke.length) fx.emit(e.mesh, ud.smoke, dt, e.type === 'harvester' ? 0.4 + Math.min(1, ud.spd / 3) : 1);
+      if (!e.isBuilding && e.def.armor === 'veh' && ud.spd > 1 && Math.random() < dt * 6) fx.dust(e.pos, 0.6);
+      // damaged things smoke & burn
+      if (e.hp < e.maxHp * 0.5 && !e.constructing && Math.random() < dt * (e.isBuilding ? 6 : 3)) {
+        const p = new THREE.Vector3(e.pos.x + (Math.random() - .5) * e.r, e.pos.y + (e.isBuilding ? 2.5 : 1), e.pos.z + (Math.random() - .5) * e.r);
+        fx.spawn(false, p, { vel: new THREE.Vector3(0.3, 2, 0.2), life: 2.5, s0: 0.6, s1: 2.6, a: 0.6, c0: 0x222222, c1: 0x555555, drag: 0.3 });
+        if (e.hp < e.maxHp * 0.25) fx.spawn(true, p, { vel: new THREE.Vector3(0, 1.5, 0), life: 0.5, s0: 0.8, s1: 0.3, c0: 0xffc060, c1: 0xff3000 });
+      }
+    }
+    for (const o of this.ore) o.mesh.children[1] && (o.mesh.children[1].material.opacity = 0.45 + 0.15 * Math.sin(vt * 2));
+    this.terrain.update(dt, vt);
+    fx.update(dt, this.camera);
+    // keep the shadow frustum centred on the view
+    const t = this.camTarget; this.sun.position.set(t.x + 60, 110, t.z + 40); this.sun.target.position.set(t.x, 0, t.z);
+    const ext = Math.min(110, 30 + this.camDist * 0.9); const sc = this.sun.shadow.camera;
+    if (sc.right !== ext) { sc.left = sc.bottom = -ext; sc.right = sc.top = ext; sc.updateProjectionMatrix(); }
   }
 
   // ---------- camera & input ----------
