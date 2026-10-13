@@ -5,7 +5,7 @@ const ACTIONS = ['attack', 'defend', 'escort', 'retreat'];
 const off = (p, a, b) => { const ang = Math.random() * Math.PI * 2, r = a + Math.random() * (b - a); return new THREE.Vector3(p.x + Math.cos(ang) * r, 0, p.z + Math.sin(ang) * r); };
 
 export function scoreActions(g, u) {
-  const t = u.traits, hp = u.hp / u.maxHp, enemy = 1 - u.team;
+  const t = u.traits, hp = u.hp / u.maxHp, enemy = ~u.team;
   const friends = g.countNear(u.pos, 16, u.team), enemies = g.countNear(u.pos, 16, enemy);
   const base = g.basePos(u.team), dBase = Math.hypot(u.pos.x - base.x, u.pos.z - base.z);
   const threat = g.threatNear(u.team), credits = g.teams[u.team].credits;
@@ -27,12 +27,12 @@ export function decideUnit(g, u) {
     }
     return;
   }
-  if (u.team === 0 && g.time - u.orderTime < 10) return; // respect recent player orders
+  if (g.isHuman(u.team) && g.time - u.orderTime < 10) return; // respect recent player orders
   const { s, ctx } = scoreActions(g, u);
   const w = s.map(v => Math.max(0.02, v) ** 2), sum = w.reduce((a, b) => a + b, 0);
   let r = Math.random() * sum, k = 0; while (k < w.length - 1 && (r -= w[k]) > 0) k++;
   const act = ACTIONS[k];
-  if (u.team === 0) return applyPlayer(g, u, act, ctx);
+  if (g.isHuman(u.team)) return applyPlayer(g, u, act, ctx);
   u.mood = act;
   switch (act) {
     case 'attack':
@@ -40,7 +40,7 @@ export function decideUnit(g, u) {
       break;
     case 'defend':
       if (u.wave && ctx.threat < 2) break;
-      if (u.wave) g.commander.removeFromWave(u);
+      if (u.wave) g.commanderOf(u.team).removeFromWave(u);
       if (ctx.dBase > 18) { u.moveTo = off(ctx.base, 8, 15); u.moveSet = g.time; u.attackMove = true; u.target = null; }
       break;
     case 'escort': {
@@ -50,7 +50,7 @@ export function decideUnit(g, u) {
       break;
     }
     case 'retreat':
-      if (u.wave) g.commander.removeFromWave(u);
+      if (u.wave) g.commanderOf(u.team).removeFromWave(u);
       u.target = null; u.moveTo = off(ctx.base, 6, 12); u.moveSet = g.time; u.attackMove = false;
       break;
   }

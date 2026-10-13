@@ -1,6 +1,9 @@
 import { THREE } from './T.js';
 import { Terrain, heightAt, rayGround, BASES, ORE_FIELDS } from './terrain.js';
 import { BUILD, UNIT, MULT } from './defs.js';
+import { modsFrom, profile } from './profile.js';
+import { Disasters } from './disasters.js';
+import { TYPES, HST } from './net.js';
 import { makeMesh, makeGhost, setGhostValid, makeOre, geo, mat } from './models.js';
 import { FX } from './fx.js';
 import { skyEnv } from './textures.js';
@@ -11,11 +14,17 @@ import { UI } from './ui.js';
 let NEXT_ID = 1;
 const tmp = new THREE.Vector3();
 const PROJ = { bullet: { speed: 70, size: 0.15, color: 0xffee88, boom: 0.6 }, rocket: { speed: 28, size: 0.3, color: 0xff8833, boom: 1.6 }, shell: { speed: 45, size: 0.3, color: 0xffcc55, boom: 1.4 } };
+export function setNextId(n) { NEXT_ID = Math.max(NEXT_ID, n); }
 export const d2 = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 
 export class Game {
-  constructor(renderer, rendererName) {
+  constructor(renderer, rendererName, opts = {}) {
     this.renderer = renderer; this.rendererName = rendererName;
+    this.mode = opts.mode || 'sp'; this.me = opts.me || 0; this.net = opts.net || null;
+    this.slots = opts.slots || [{ team: 0, human: true, name: 'You', ups: profile.data.upgrades }, { team: 1, human: false, name: 'AI' }];
+    this.isClient = this.mode === 'client'; this.authority = !this.isClient; this.netEvents = [];
+    this.mods = this.slots.map(sl => modsFrom(sl.human ? sl.ups : {}));
+    this.tdefs = this.mods.map(m => this.makeDefs(m));
     const scene = this.scene = new THREE.Scene();
     // renderer: ACES tone mapping, sRGB output, soft shadows (works for WebGL and WebGPURenderer)
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
@@ -24,7 +33,7 @@ export class Game {
     const fogCol = new THREE.Color(0xb7cde0);
     scene.background = fogCol; scene.fog = new THREE.Fog(fogCol, 140, 330);
     scene.environment = skyEnv(); if ('environmentIntensity' in scene) scene.environmentIntensity = 0.45;
-    scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x5a5a40, 0.9));
+    this.hemi = new THREE.HemisphereLight(0xcfe4ff, 0x5a5a40, 0.9); scene.add(this.hemi);
     const sun = this.sun = new THREE.DirectionalLight(0xfff1dc, 3.0); sun.position.set(60, 110, 40);
     sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.04;
     Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 320 }); sun.shadow.camera.updateProjectionMatrix();
@@ -33,15 +42,19 @@ export class Game {
     this.shakeAmt = 0; this.dmgNums = []; this.showDmg = true; this.quality = 'High';
     this.fx.onBoom = (pos, size) => { const d = Math.hypot(pos.x - this.camTarget.x, pos.z - this.camTarget.z); this.addShake(size * 0.55 * Math.max(0, 1 - d / (40 + this.camDist * 0.6))); };
     this.camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 1200);
-    this.camTarget = new THREE.Vector3(BASES[0].x + 12, 0, BASES[0].z - 12); this.camDist = 65;
+    this.camTarget = new THREE.Vector3(BASES[this.me].x - Math.sign(BASES[this.me].x) * 12, 0, BASES[this.me].z - Math.sign(BASES[this.me].z) * 12); this.camDist = 65;
     this.terrain = new Terrain(scene);
     this.entities = []; this.ore = []; this.projectiles = []; this.effects = [];
-    this.teams = [0, 1].map(() => ({ credits: 2500, dealt: 0, taken: 0, earned: 0, queues: { barracks: [], factory: [] } }));
+    this.teams = this.slots.map((sl, i) => ({ credits: 2500 + this.mods[i].credits, alive: true, dealt: 0, taken: 0, earned: 0, queues: { barracks: [], factory: [] } }));
     this.time = 0; this.selected = new Set(); this.placing = null; this.ghost = null; this.over = false;
     this.keys = {}; this.mouse = { x: 0, y: 0, inside: false }; this.drag = null;
     this.raycaster = new THREE.Raycaster(); this.last = performance.now(); this.winT = 0;
-    this.spawnOre(); this.setupBases();
-    this.commander = new Commander(this, 1);
+    if (this.isClient) this.initOre(opts.oreInit || []); else { this.spawnOre(); this.setupBases(); }
+    this.commanders = {};
+    if (this.authority) for (const sl of this.slots) if (!sl.human) this.commanders[sl.team] = new Commander(this, sl.team);
+    this.commander = Object.values(this.commanders)[0] || { thoughtHTML: this.isClient ? 'Multiplayer client: the host runs all AI.' : 'No AI players', brain: { save() {} }, removeFromWave() {} };
+    this.disasters = new Disasters(this, opts.disasters !== false);
+    this.matchPoints = 0; this.kills = 0;
     this.ui = new UI(this);
     this.bindInput();
     window.addEventListener('resize', () => this.resize()); this.resize();
@@ -58,25 +71,44 @@ export class Game {
       this.ore.push({ pos: m.position, amount: 500, max: 500, mesh: m });
     }
   }
+  initOre(list) {
+    list.forEach(([x, z, amt], i) => { const m = makeOre(i); m.position.set(x, heightAt(x, z) - 0.05, z); m.rotation.y = Math.random() * 6.28; m.scale.setScalar(0.4 + 0.6 * amt / 500); this.scene.add(m); this.ore.push({ pos: m.position, amount: amt, max: 500, mesh: m }); });
+  }
+  oreList() { return this.ore.map(o => [+o.pos.x.toFixed(2), +o.pos.z.toFixed(2), Math.round(o.amount)]); }
+  makeDefs(m) {
+    const unit = {};
+    for (const [k, d] of Object.entries(UNIT)) {
+      const u = unit[k] = { ...d };
+      u.dmg *= m.dmg; u.rof *= m.rof;
+      if (k === 'tank') { u.hp = Math.round(u.hp * m.tankHp); u.dmg *= m.tankDmg; u.speed *= m.tankSpeed; u.name = ['Tank', 'Tank Mk II', 'Tank Mk III'][m.tankTier]; u.tier = m.tankTier; }
+      if (u.armor === 'inf') { u.hp = Math.round(u.hp * m.infHp); u.dmg *= m.infDmg; }
+    }
+    return { unit };
+  }
+  isHuman(t) { const s = this.slots[t]; return !!(s && s.human); }
+  match(team, spec) { return spec >= 0 ? team === spec : team !== ~spec; }
+  commanderOf(t) { return this.commanders[t] || this.commander; }
   setupBases() {
-    BASES.forEach((b, t) => {
+    BASES.slice(0, this.slots.length).forEach((b, t) => {
       this.createBuilding(t, 'cy', b.x, b.z, false);
       const dx = -Math.sign(b.x), dz = -Math.sign(b.z);
       for (let i = 0; i < 3; i++) this.createUnit(t, 'rifle', b.x + dx * 9 + i * 1.5, b.z + dz * 7);
       for (let i = 0; i < 2; i++) this.createUnit(t, 'tank', b.x + dx * 12 + i * 3, b.z + dz * 11);
     });
   }
-  createBuilding(team, type, x, z, constructing) {
+  createBuilding(team, type, x, z, constructing, id) {
     const def = BUILD[type], mesh = makeMesh(type, team, def.r);
+    if (id) NEXT_ID = Math.max(NEXT_ID, id + 1);
     mesh.position.set(x, heightAt(x, z), z); this.scene.add(mesh);
-    const e = { id: NEXT_ID++, team, type, def, isBuilding: true, pos: mesh.position, hp: constructing ? def.hp * 0.2 : def.hp, maxHp: def.hp, r: def.r, mesh, constructing, progress: constructing ? 0 : 1, dead: false };
+    const e = { id: id || NEXT_ID++, team, type, def, isBuilding: true, pos: mesh.position, hp: constructing ? def.hp * 0.2 : def.hp, maxHp: def.hp, r: def.r, mesh, constructing, progress: constructing ? 0 : 1, dead: false };
     if (constructing) mesh.scale.y = 0.1;
     this.entities.push(e); return e;
   }
-  createUnit(team, type, x, z) {
-    const def = UNIT[type], mesh = makeMesh(type, team, def.r);
+  createUnit(team, type, x, z, id) {
+    const def = this.tdefs[team].unit[type], mesh = makeMesh(type, team, def.r, def.tier || 0);
+    if (id) NEXT_ID = Math.max(NEXT_ID, id + 1);
     mesh.position.set(x, heightAt(x, z), z); this.scene.add(mesh);
-    const e = { id: NEXT_ID++, team, type, def, isBuilding: false, pos: mesh.position, hp: def.hp, maxHp: def.hp, r: def.r, mesh, dead: false,
+    const e = { id: id || NEXT_ID++, team, type, def, isBuilding: false, pos: mesh.position, hp: def.hp, maxHp: def.hp, r: def.r, mesh, dead: false,
       target: null, moveTo: null, moveSet: 0, attackMove: false, chase: false, cd: Math.random(), traits: makeTraits(),
       nextThink: this.time + 1 + Math.random() * 2, orderTime: -99, mood: 'idle', cargo: 0, hstate: 'toOre', wave: null, oreTarget: null };
     this.entities.push(e); return e;
@@ -88,13 +120,13 @@ export class Game {
   basePos(t) { const c = this.getCY(t); return c ? c.pos : new THREE.Vector3(BASES[t].x, 0, BASES[t].z); }
   has(t, type) { return this.entities.some(e => !e.dead && e.team === t && e.type === type && !e.constructing); }
   producer(t, kind) { return this.entities.find(e => !e.dead && e.team === t && e.type === kind && !e.constructing); }
-  units(t) { return this.entities.filter(e => !e.dead && !e.isBuilding && e.team === t); }
+  units(t) { return this.entities.filter(e => !e.dead && !e.isBuilding && this.match(e.team, t)); }
   buildings(t) { return this.entities.filter(e => !e.dead && e.isBuilding && e.team === t); }
   countType(t, type) { return this.entities.filter(e => !e.dead && e.team === t && e.type === type).length; }
   power(t) { let prod = 0, use = 0; for (const e of this.entities) if (!e.dead && e.isBuilding && e.team === t && !e.constructing) { if (e.def.power > 0) prod += e.def.power; else use -= e.def.power; } return { prod, use }; }
-  armyValue(t) { let v = 0; for (const e of this.entities) if (!e.dead && !e.isBuilding && e.team === t && e.type !== 'harvester') v += e.def.cost * e.hp / e.maxHp; return v; }
-  countNear(p, rad, team, bld = false) { let n = 0; for (const e of this.entities) if (!e.dead && e.team === team && (bld || !e.isBuilding) && e.type !== 'harvester' && d2(e.pos, p) < rad) n++; return n; }
-  threatNear(t) { return this.countNear(this.basePos(t), 35, 1 - t); }
+  armyValue(t) { let v = 0; for (const e of this.entities) if (!e.dead && !e.isBuilding && this.match(e.team, t) && e.type !== 'harvester') v += e.def.cost * e.hp / e.maxHp; return v; }
+  countNear(p, rad, team, bld = false) { let n = 0; for (const e of this.entities) if (!e.dead && this.match(e.team, team) && (bld || !e.isBuilding) && e.type !== 'harvester' && d2(e.pos, p) < rad) n++; return n; }
+  threatNear(t) { return this.countNear(this.basePos(t), 35, ~t); }
   nearestEnemy(u, range) {
     let best = null, bd = 1e9;
     for (const e of this.entities) {
@@ -147,7 +179,7 @@ export class Game {
     return u;
   }
   updateProduction(dt) {
-    for (let t = 0; t < 2; t++) {
+    for (let t = 0; t < this.teams.length; t++) {
       const pw = this.power(t), mult = pw.prod >= pw.use ? 1 : 0.5;
       for (const k of ['barracks', 'factory']) {
         const q = this.teams[t].queues[k]; if (!q.length) continue;
@@ -176,7 +208,7 @@ export class Game {
       }
     }
     L = Math.hypot(dx, dz) || 1; dx /= L; dz /= L;
-    const sp = u.def.speed * dt;
+    const sp = u.def.speed * dt * this.disasters.slowAt(u.pos);
     u.pos.x = Math.max(-92, Math.min(92, u.pos.x + dx * sp)); u.pos.z = Math.max(-92, Math.min(92, u.pos.z + dz * sp));
     this.faceDir(u, dx, dz, dt);
   }
@@ -218,9 +250,9 @@ export class Game {
       case 'harvest': {
         const n = u.oreTarget; u.mood = 'harvesting';
         if (!n || n.amount <= 0) { u.hstate = 'toOre'; break; }
-        const take = Math.min(35 * dt, n.amount, cap - u.cargo); n.amount -= take; u.cargo += take;
+        const take = Math.min(35 * this.mods[u.team].harvest * dt, n.amount, cap - u.cargo); n.amount -= take; u.cargo += take;
         n.mesh.scale.setScalar(0.4 + 0.6 * n.amount / n.max); n.mesh.rotation.y += dt;
-        if (n.amount <= 0) { this.scene.remove(n.mesh); this.ore = this.ore.filter(o => o !== n); }
+        if (n.amount <= 0) this.scene.remove(n.mesh);
         if (u.cargo >= cap - 0.01) u.hstate = 'toRef';
         break;
       }
@@ -260,6 +292,7 @@ export class Game {
     const ud = u.mesh.userData;
     if (ud.muzzle) { u.mesh.updateMatrixWorld(true); ud.muzzle.getWorldPosition(m.position); }
     ud.recoil = 1; this.scene.add(m);
+    if (this.net && this.authority) this.netEvents.push(['f', u.id, t.id]);
     this.projectiles.push({ mesh: m, target: t, attacker: u, team: u.team, dmg: u.def.dmg, weapon: u.def.weapon, P, aim: t.pos.clone() });
     const dir = new THREE.Vector3(t.pos.x - u.pos.x, 0, t.pos.z - u.pos.z).normalize();
     this.fx.muzzle(m.position, dir, u.def.weapon !== 'bullet');
@@ -287,20 +320,25 @@ export class Game {
     this.projectiles = this.projectiles.filter(p => !p.done);
   }
   damage(t, amt, attacker, team) {
-    if (t.dead) return;
+    if (t.dead || !this.authority) return;
+    if (t.isBuilding) amt *= this.mods[t.team].bldArmor;
+    if (this.net) this.netEvents.push(['h', t.id, Math.round(amt)]);
     t.hp -= amt; this.teams[team].dealt += amt;
     this.fx.hitFlash(t.mesh); if (this.showDmg) { this.dmgNums.push({ x: t.pos.x + (Math.random() - .5), y: t.pos.y + (t.isBuilding ? 4 : 2), z: t.pos.z + (Math.random() - .5), amt: Math.round(amt), t: 0, big: amt >= 30 }); if (this.dmgNums.length > 60) this.dmgNums.shift(); } this.teams[t.team].taken += amt; t.lastHit = this.time;
-    if (!t.isBuilding && t.type !== 'harvester' && !t.target && attacker && !attacker.dead && (t.team === 1 || this.time - t.orderTime > 3)) { t.target = attacker; t.chase = false; }
-    if (t.hp <= 0) this.kill(t);
+    if (!t.isBuilding && t.type !== 'harvester' && !t.target && attacker && !attacker.dead && (!this.isHuman(t.team) || this.time - t.orderTime > 3)) { t.target = attacker; t.chase = false; }
+    if (t.hp <= 0) this.kill(t, team);
   }
-  kill(e) {
+  kill(e, by) {
+    if (e.dead) return;
     e.dead = true; this.selected.delete(e);
+    if (this.net && this.authority) this.netEvents.push(['k', e.id, by ?? -1]);
+    if (by === this.me && e.team !== this.me) { this.kills++; this.awardPoints(Math.max(2, Math.round(e.def.cost / 25)), 'kill'); }
     const veh = !e.isBuilding && e.def.armor === 'veh', ud = e.mesh.userData;
     if (ud.orig) { for (const [o, m] of ud.orig) o.material = m; ud.orig = null; }
     if (e.isBuilding) { this.fx.explosion(e.pos, e.r * 0.9, { debris: 30 }); this.fx.wreck(e.mesh, 'bld', e); }
     else if (veh) { this.fx.explosion(e.pos, 1.9, { debris: 14 }); this.fx.wreck(e.mesh, 'veh', e); }
     else { for (let i = 0; i < 4; i++) this.fx.dust(e.pos, 0.4); this.fx.wreck(e.mesh, 'inf', e); }
-    if (e.wave) this.commander.removeFromWave(e);
+    if (e.wave) this.commanderOf(e.team).removeFromWave(e);
   }
   makeProjectile(w) {
     if (!this.projGeo) {
@@ -324,29 +362,89 @@ export class Game {
     this.effects = this.effects.filter(f => !f.done);
   }
   checkWin() {
-    for (let t = 0; t < 2; t++) {
-      if (!this.getCY(t) && !this.entities.some(e => !e.dead && !e.isBuilding && e.team === t)) {
-        this.over = true; this.commander.brain.save(); this.ui.showEnd(t === 1); return;
-      }
+    for (let t = 0; t < this.teams.length; t++) {
+      if (this.teams[t].alive && !this.getCY(t) && !this.entities.some(e => !e.dead && !e.isBuilding && e.team === t)) { this.teams[t].alive = false; if (this.net) this.netEvents.push(['x', t]); }
     }
+    const alive = this.teams.map((tm, i) => tm.alive ? i : -1).filter(i => i >= 0);
+    if (!this.teams[this.me].alive) return this.endMatch(false);
+    if (alive.length <= 1) { if (this.net) this.netEvents.push(['end', alive[0] ?? -1]); this.endMatch(alive[0] === this.me); }
   }
+  endMatch(win) {
+    if (this.over) return; this.over = true;
+    for (const c of Object.values(this.commanders)) c.brain.save();
+    const pts = win ? 500 + this.slots.length * 100 : 100;
+    this.awardPoints(pts, win ? 'victory' : 'participation');
+    if (win) profile.data.wins++; else profile.data.losses++; profile.data.kills += this.kills; profile.save();
+    this.ui.showEnd(win, this.matchPoints);
+  }
+  envDamage(e, amt) {
+    if (e.dead || !this.authority || amt <= 0) return;
+    if (e.isBuilding) amt *= this.mods[e.team].bldArmor;
+    e.hp -= amt; this.teams[e.team].taken += amt; e.lastHit = this.time; this.fx.hitFlash(e.mesh);
+    if (this.net) this.netEvents.push(['h', e.id, Math.round(amt)]);
+    if (this.showDmg) this.pushDmg(e, amt);
+    if (e.hp <= 0) this.kill(e, -1);
+  }
+  pushDmg(t, amt) { this.dmgNums.push({ x: t.pos.x + (Math.random() - .5), y: t.pos.y + (t.isBuilding ? 4 : 2), z: t.pos.z + (Math.random() - .5), amt: Math.round(amt), t: 0, big: amt >= 30 }); if (this.dmgNums.length > 60) this.dmgNums.shift(); }
+  awardPoints(n, why) { this.matchPoints += n; profile.add(n, why); }
   update(dt) {
     this.time += dt;
     for (const e of this.entities) if (!e.dead) { if (e.isBuilding) this.updateBuilding(e, dt); else this.updateUnit(e, dt); }
     this.separate();
     this.updateProduction(dt); this.updateProjectiles(dt); this.updateEffects(dt);
     for (const e of this.entities) if (!e.dead && !e.isBuilding && this.time >= e.nextThink) { decideUnit(this, e); e.nextThink = this.time + 1.5 + Math.random() * 1.5; }
-    this.commander.update(dt);
+    for (const c of Object.values(this.commanders)) c.update(dt);
+    this.disasters.update(dt);
+    const ern = this.teams[this.me].earned, k = Math.floor(ern / 100); if (k > (this.harvPts || 0)) { this.awardPoints((k - (this.harvPts || 0)) * 2, 'harvest'); this.harvPts = k; }
     this.entities = this.entities.filter(e => !e.dead);
     if ((this.winT += dt) > 1) { this.winT = 0; this.checkWin(); }
   }
   frame() {
     const now = performance.now(), dt = Math.min(0.05, (now - this.last) / 1000); this.last = now;
-    if (!this.over) this.update(dt); else this.updateEffects(dt);
+    if (this.isClient) this.clientUpdate(dt); else if (!this.over) this.update(dt); else this.updateEffects(dt);
+    if (this.net && this.authority) this.net.tick(dt);
     this.updateCamera(dt); this.updateGhost(); this.updateVisuals(dt);
     this.renderer.render(this.scene, this.camera);
     this.ui.update(dt); this.ui.drawOverlay(); if (this.showDmg) this.drawDamageNumbers(dt); else this.dmgNums.length = 0;
   }
+
+  // ---------- multiplayer client ----------
+  clientUpdate(dt) {
+    this.time += dt;
+    for (const e of this.entities) {
+      if (e.dead || !e.net) continue; const n = e.net, k = Math.min(1, dt * 12);
+      e.pos.x += (n.x - e.pos.x) * k; e.pos.z += (n.z - e.pos.z) * k; e.pos.y = heightAt(e.pos.x, e.pos.z);
+      let dr = n.ry - e.mesh.rotation.y; while (dr > Math.PI) dr -= Math.PI * 2; while (dr < -Math.PI) dr += Math.PI * 2; e.mesh.rotation.y += dr * k;
+    }
+    this.updateProjectiles(dt); this.updateEffects(dt);
+    this.entities = this.entities.filter(e => !e.dead);
+    const ern = this.teams[this.me].earned, kk = Math.floor(ern / 100); if (kk > (this.harvPts ?? kk)) this.awardPoints((kk - this.harvPts) * 2, 'harvest'); this.harvPts = kk;
+  }
+  applySnapshot(m) {
+    const byId = new Map(this.entities.map(e => [e.id, e])), seen = new Set();
+    for (const [id, ti, team, x, z, ry, hp, a, b] of m.e) {
+      const type = TYPES[ti]; let e = byId.get(id); seen.add(id);
+      if (!e) { e = BUILD[type] ? this.createBuilding(team, type, x, z, a >= 0, id) : this.createUnit(team, type, x, z, id); e.mesh.rotation.y = ry; byId.set(id, e); }
+      e.net = { x, z, ry }; e.hp = hp;
+      if (e.isBuilding) { const c = a >= 0; if (c) { e.progress = a; e.mesh.scale.y = 0.1 + 0.9 * Math.min(1, a); } else if (e.constructing) e.mesh.scale.y = 1; e.constructing = c; }
+      else { e.cargo = a; e.hstate = HST[b]; }
+    }
+    for (const ev of m.ev) {
+      const k = ev[0];
+      if (k === 'f') { const u = byId.get(ev[1]), t = byId.get(ev[2]); if (u && t && !u.dead) this.fire(u, t); }
+      else if (k === 'k') { const e = byId.get(ev[1]); if (e && !e.dead) this.kill(e, ev[2]); }
+      else if (k === 'h') { const e = byId.get(ev[1]); if (e && !e.dead) { this.fx.hitFlash(e.mesh); if (this.showDmg) this.pushDmg(e, ev[2]); } }
+      else if (k === 'd' || k === 'bolt') this.disasters.onEvent(ev);
+      else if (k === 'x') { if (this.teams[ev[1]]) this.teams[ev[1]].alive = false; if (ev[1] === this.me) this.endMatch(false); }
+      else if (k === 'end') this.endMatch(ev[1] === this.me);
+    }
+    for (const e of this.entities) if (!seen.has(e.id) && !e.dead) { e.dead = true; this.scene.remove(e.mesh); this.selected.delete(e); }
+    m.teams.forEach(([cr, alive, earned, qs], i) => { const t = this.teams[i]; if (!t) return; t.credits = cr; t.alive = !!alive; t.earned = earned; t.queues.barracks = qs[0].map(([type, tt]) => ({ type, t: tt })); t.queues.factory = qs[1].map(([type, tt]) => ({ type, t: tt })); });
+    m.ore.forEach((amt, i) => { const o = this.ore[i]; if (!o) return; o.amount = amt; if (amt <= 0) { if (o.mesh.parent) this.scene.remove(o.mesh); } else o.mesh.scale.setScalar(0.4 + 0.6 * amt / o.max); });
+    this.time = m.time;
+  }
+  // host: a client left -> its team is taken over by an AI commander
+  takeOverByAI(team) { this.slots[team].human = false; this.slots[team].name += ' (AI)'; this.commanders[team] = new Commander(this, team); }
 
   // ---------- visuals only (no gameplay state is touched here) ----------
   updateVisuals(dt) {
@@ -373,7 +471,7 @@ export class Game {
       }
     }
     for (const o of this.ore) o.mesh.children[1] && (o.mesh.children[1].material.opacity = 0.45 + 0.15 * Math.sin(vt * 2));
-    this.terrain.update(dt, vt);
+    this.terrain.update(dt, vt); this.disasters.visual(dt);
     fx.update(dt, this.camera);
     // keep the shadow frustum centred on the view
     const t = this.camTarget; this.sun.position.set(t.x + 60, 110, t.z + 40); this.sun.target.position.set(t.x, 0, t.z);
@@ -428,7 +526,8 @@ export class Game {
     for (const e of list) { this.selected.add(e); e.mesh.userData.ring.visible = true; }
   }
   startPlacing(type) {
-    if (this.teams[0].credits < BUILD[type].cost || !this.reqMet(0, type) || !this.getCY(0)) return;
+    const me = this.me;
+    if (this.teams[me].credits < BUILD[type].cost || !this.reqMet(me, type) || !this.getCY(me)) return;
     this.cancelPlacing(); this.placing = type; this.ghost = makeGhost(type); this.scene.add(this.ghost);
   }
   cancelPlacing() { if (this.ghost) this.scene.remove(this.ghost); this.ghost = null; this.placing = null; }
@@ -437,30 +536,53 @@ export class Game {
     const g = this.groundAt(this.mouse.x, this.mouse.y); if (!g) return;
     g.x = Math.round(g.x * 2) / 2; g.z = Math.round(g.z * 2) / 2;
     this.ghost.position.set(g.x, heightAt(g.x, g.z), g.z);
-    this.ghostOk = this.canPlace(0, this.placing, g.x, g.z) && this.teams[0].credits >= BUILD[this.placing].cost;
+    this.ghostOk = this.canPlace(this.me, this.placing, g.x, g.z) && this.teams[this.me].credits >= BUILD[this.placing].cost;
     setGhostValid(this.ghost, this.ghostOk);
   }
   tryPlace() {
     const p = this.ghost.position;
-    if (this.placeBuilding(0, this.placing, p.x, p.z)) this.cancelPlacing();
+    if (!this.canPlace(this.me, this.placing, p.x, p.z) || this.teams[this.me].credits < BUILD[this.placing].cost) return;
+    this.command({ c: 'place', type: this.placing, x: p.x, z: p.z }); this.cancelPlacing();
+  }
+  // All local player actions go through command(): executed locally, or sent to the host in multiplayer.
+  command(c) {
+    if (this.isClient) { this.net.sendCmd(c); return true; }
+    return this.execCommand(this.me, c);
+  }
+  execCommand(team, c) {
+    if (this.over || !this.teams[team] || !this.teams[team].alive) return false;
+    switch (c.c) {
+      case 'place': return !!this.placeBuilding(team, c.type, c.x, c.z);
+      case 'queue': return this.enqueue(team, c.type);
+      case 'cancel': this.cancel(team, c.type); return true;
+      case 'order': {
+        const ids = new Set(c.ids), sel = this.entities.filter(e => ids.has(e.id) && !e.dead && !e.isBuilding && e.team === team); if (!sel.length) return false;
+        const ent = c.target ? this.entities.find(e => e.id === c.target && !e.dead) : null;
+        if (ent && ent.team !== team) {
+          for (const u of sel) if (u.type !== 'harvester') { u.target = ent; u.chase = true; u.moveTo = null; u.orderTime = this.time; u.mood = 'ordered: attack'; }
+          return true;
+        }
+        const g = { x: c.x, z: c.z };
+        const ore = this.nearestOre(g, 4); let movers = sel;
+        if (ore) { movers = sel.filter(u => u.type !== 'harvester'); for (const u of sel) if (u.type === 'harvester') { u.oreTarget = ore; u.hstate = 'toOre'; u.moveTo = null; } }
+        const n = movers.length, cols = Math.ceil(Math.sqrt(n));
+        movers.forEach((u, i) => {
+          const ox = (i % cols - (cols - 1) / 2) * 2.4, oz = (Math.floor(i / cols) - (cols - 1) / 2) * 2.4;
+          u.moveTo = new THREE.Vector3(g.x + ox, 0, g.z + oz); u.moveSet = this.time; u.target = null; u.attackMove = false; u.chase = false;
+          u.orderTime = this.time; u.mood = 'ordered: move';
+        });
+        return true;
+      }
+    }
+    return false;
   }
   orderAt(sx, sy, groundOverride) {
-    const sel = [...this.selected].filter(e => !e.dead && !e.isBuilding && e.team === 0); if (!sel.length) return;
+    const sel = [...this.selected].filter(e => !e.dead && !e.isBuilding && e.team === this.me); if (!sel.length) return false;
     const ent = groundOverride ? null : this.pick(sx, sy), g = groundOverride || this.groundAt(sx, sy);
-    if (ent && ent.team === 1) {
-      for (const u of sel) if (u.type !== 'harvester') { u.target = ent; u.chase = true; u.moveTo = null; u.orderTime = this.time; u.mood = 'ordered: attack'; }
-      this.effect(ent.pos, 1.5, 0xff2222, 0.3); return;
-    }
-    if (!g) return;
-    const ore = this.nearestOre(g, 4); let movers = sel;
-    if (ore) { movers = sel.filter(u => u.type !== 'harvester'); for (const u of sel) if (u.type === 'harvester') { u.oreTarget = ore; u.hstate = 'toOre'; u.moveTo = null; } }
-    const n = movers.length, cols = Math.ceil(Math.sqrt(n));
-    movers.forEach((u, i) => {
-      const ox = (i % cols - (cols - 1) / 2) * 2.4, oz = (Math.floor(i / cols) - (cols - 1) / 2) * 2.4;
-      u.moveTo = new THREE.Vector3(g.x + ox, 0, g.z + oz); u.moveSet = this.time; u.target = null; u.attackMove = false; u.chase = false;
-      u.orderTime = this.time; u.mood = 'ordered: move';
-    });
-    this.effect(g, 1, 0x33ff66, 0.3);
+    if (ent && ent.team !== this.me) { this.command({ c: 'order', ids: sel.map(u => u.id), target: ent.id }); this.effect(ent.pos, 1.5, 0xff2222, 0.3); return true; }
+    if (!g) return false;
+    this.command({ c: 'order', ids: sel.map(u => u.id), x: +g.x.toFixed(2), z: +g.z.toFixed(2) });
+    this.effect(g, 1, 0x33ff66, 0.3); return true;
   }
   bindInput() {
     const c = this.renderer.domElement;
@@ -477,10 +599,10 @@ export class Game {
       const d = this.drag; this.drag = null;
       if (Math.abs(d.x1 - d.x0) < 6 && Math.abs(d.y1 - d.y0) < 6) {
         const ent = this.pick(d.x1, d.y1);
-        this.setSel(ent && ent.team === 0 ? [ent] : [], d.shift);
+        this.setSel(ent && ent.team === this.me ? [ent] : [], d.shift);
       } else {
         const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1), y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
-        this.setSel(this.units(0).filter(u => { const p = this.project(u.pos, 0.5); return p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1; }), d.shift);
+        this.setSel(this.units(this.me).filter(u => { const p = this.project(u.pos, 0.5); return p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1; }), d.shift);
       }
     });
     c.addEventListener('wheel', e => { e.preventDefault(); this.camDist = Math.max(22, Math.min(140, this.camDist * (1 + Math.sign(e.deltaY) * 0.1))); }, { passive: false });
@@ -490,7 +612,8 @@ export class Game {
       if (e.code === 'Escape') { this.cancelPlacing(); this.setSel([], false); }
       if (e.code === 'KeyQ') this.setQuality(this.quality === 'High' ? 'Low' : 'High');
       if (e.code === 'KeyN') { this.showDmg = !this.showDmg; const el = document.getElementById('dmgToggle'); if (el) el.textContent = this.showDmg ? 'on' : 'off'; }
-      if (e.code === 'KeyH') { const b = this.basePos(0); this.camTarget.set(b.x, 0, b.z); }
+      if (e.code === 'KeyX' && this.authority) this.disasters.trigger();
+      if (e.code === 'KeyH') { const b = this.basePos(this.me); this.camTarget.set(b.x, 0, b.z); }
     });
     window.addEventListener('keyup', e => { this.keys[e.code] = false; });
     window.addEventListener('blur', () => { this.keys = {}; });

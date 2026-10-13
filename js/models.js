@@ -79,7 +79,7 @@ function part(g, m, sx, sy, sz, x, y, z, parent, rx = 0, ry = 0, rz = 0) {
 function grp(parent, x = 0, y = 0, z = 0) { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; }
 
 // ---------- units ----------
-function tank(g, root, T) {
+function tank(g, root, T, tier = 0) {
   const D = pbr('dark'), S = pbr('steel'), R = pbr('rubber'), K = pbr('gun');
   const body = grp(root); root.userData.body = body;
   const wheels = [];
@@ -108,6 +108,17 @@ function tank(g, root, T) {
   part(g.cyl, K, 0.24, 0.35, 0.24, 0, 0, 0.75, barrel, Math.PI / 2);
   part(g.cyl8, D, 0.24, 0.22, 0.24, 0, 0, 1.75, barrel, Math.PI / 2);
   root.userData.muzzle = grp(barrel, 0, 0, 1.95);
+  if (tier >= 1) { // Mk II: reactive armour blocks on turret and skirts, side bins
+    for (let i = 0; i < 4; i++) for (const sx of [-1, 1]) part(g.box, D, 0.1, 0.22, 0.3, sx * 0.68, 0.24, 0.45 - i * 0.32, tur, 0, sx * 0.25);
+    for (let i = 0; i < 6; i++) for (const sx of [-1, 1]) part(g.box, T, 0.08, 0.24, 0.42, sx * 1.22, 0.58, -1.1 + i * 0.44, body);
+    part(g.box, D, 0.9, 0.3, 0.35, 0, 0.22, -1.2, tur);
+  }
+  if (tier >= 2) { // Mk III: heavier gun, roof machine gun, bigger stance
+    barrel.children[0].scale.set(0.21, 2.0, 0.21); barrel.children[0].position.z = 1.0; barrel.children[2].position.z = 2.05; root.userData.muzzle.position.z = 2.25;
+    const mg = grp(tur, -0.32, 0.62, -0.15); part(g.box, K, 0.08, 0.1, 0.55, 0, 0.05, 0.25, mg); part(g.box, D, 0.2, 0.16, 0.06, 0, 0.06, 0.05, mg);
+    part(g.box, pbr('red'), 0.06, 0.06, 0.06, 0.45, 1.4, -0.85, tur);
+    body.scale.setScalar(1.1);
+  }
   root.userData.animate = (dt, st) => {
     for (const w of wheels) w.rotation.x += st.speed * dt * 2.2;
     const ud = root.userData; ud.recoil = Math.max(0, (ud.recoil || 0) - dt * 3);
@@ -298,11 +309,11 @@ function building(type, g, root, T) {
   };
 }
 
-export function makeMesh(type, team, r = 1) {
+export function makeMesh(type, team, r = 1, tier = 0) {
   const g = geo(), root = new THREE.Group();
   const T = pbr('team' + team + (type === 'tank' || type === 'cy' || type === 'factory' ? 'c' : ''));
   switch (type) {
-    case 'tank': tank(g, root, T); break;
+    case 'tank': tank(g, root, T, tier); break;
     case 'rifle': case 'rocket': soldier(g, root, pbr('team' + team), type === 'rocket'); break;
     case 'harvester': harvester(g, root, pbr('team' + team)); break;
     default: building(type, g, root, T);

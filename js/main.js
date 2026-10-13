@@ -1,6 +1,9 @@
 import { setTHREE } from './T.js';
+import { profile } from './profile.js';
+import { Menu } from './menu.js';
 
 async function boot() {
+  profile.load();
   let THREE = null, renderer = null, name = '';
   if (navigator.gpu) {
     try {
@@ -19,12 +22,22 @@ async function boot() {
     name = 'WebGL';
   }
   setTHREE(THREE);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarse ? 1.5 : 2));
   document.getElementById('view').appendChild(renderer.domElement);
-  const { Game } = await import('./game.js');
-  const game = new Game(renderer, name);
-  window.game = game;
   document.getElementById('loading').remove();
-  renderer.setAnimationLoop(() => game.frame());
+  const startGame = async (opts) => {
+    const { Game } = await import('./game.js');
+    document.body.classList.add('ingame');
+    const game = new Game(renderer, name, opts);
+    window.game = game;
+    if (coarse) game.setQuality('Low');
+    const { Touch } = await import('./touch.js'); game.touch = new Touch(game);
+    renderer.setAnimationLoop(() => game.frame());
+    return game;
+  };
+  window.menu = new Menu(startGame);
+  // PWA: register the service worker (relative so it works under /rts-game/)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW registration failed', e));
 }
-boot().catch(e => { console.error(e); document.getElementById('loading').textContent = 'Failed: ' + e.message; });
+boot().catch(e => { console.error(e); const l = document.getElementById('loading'); if (l) l.textContent = 'Failed: ' + e.message; });

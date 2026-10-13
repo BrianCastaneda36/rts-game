@@ -13,7 +13,13 @@ export class Commander {
     this.thinkT = 1.5; this.buildT = 1; this.waveT = 0; this.nextWave = 70 + r() * 50; this.waves = []; this.waveCount = 0;
     this.strategy = 'economy'; this.boIndex = 0; this.prev = { dealt: 0, taken: 0, earned: 0 }; this.thoughtHTML = ''; this.log = [];
   }
-  get enemy() { return 1 - this.team; }
+  // focus = nearest surviving opposing team (free-for-all with 2-4 players)
+  get enemy() { return this.focus ?? ~this.team; }
+  pickFocus() {
+    const g = this.g, me = g.basePos(this.team); let best = null, bd = 1e9;
+    for (let t = 0; t < g.teams.length; t++) { if (t === this.team || !g.teams[t].alive) continue; const b = g.basePos(t), d = Math.hypot(b.x - me.x, b.z - me.z) * (0.7 + Math.random() * 0.6); if (d < bd) { bd = d; best = t; } }
+    this.focus = best;
+  }
   features() {
     const g = this.g, t = this.team, mine = g.armyValue(t), theirs = g.armyValue(this.enemy), ratio = (mine + 100) / (theirs + 100), pw = g.power(t);
     return [clamp01(g.teams[t].credits / 3000), ratio / (ratio + 1), clamp01(g.threatNear(t) / 8), clamp01(g.countType(t, 'harvester') / 5), clamp01((pw.prod - pw.use + 100) / 200), clamp01(g.time / 900)];
@@ -25,6 +31,7 @@ export class Commander {
   }
   think() {
     const g = this.g, tm = g.teams[this.team];
+    if (this.focus == null || !g.teams[this.focus].alive || Math.random() < 0.1) this.pickFocus();
     const reward = Math.max(-3, Math.min(3, ((tm.dealt - this.prev.dealt) - (tm.taken - this.prev.taken)) / 400 + (tm.earned - this.prev.earned) / 1000));
     this.prev = { dealt: tm.dealt, taken: tm.taken, earned: tm.earned };
     const adv = this.brain.learn(reward);
@@ -87,7 +94,7 @@ export class Commander {
     }
   }
   chooseTarget() {
-    const g = this.g, o = this.enemy, all = g.entities.filter(e => !e.dead && e.team === o);
+    const g = this.g, o = this.enemy, all = g.entities.filter(e => !e.dead && g.match(e.team, o));
     const r = Math.random(), pick = arr => arr.length ? arr[Math.floor(Math.random() * arr.length)] : null;
     let t = null;
     if (r < 0.3) t = pick(all.filter(e => e.type === 'cy'));
@@ -136,7 +143,7 @@ export class Commander {
       const c = w.units.reduce((a, u) => (a.x += u.pos.x / w.units.length, a.z += u.pos.z / w.units.length, a), { x: 0, z: 0 });
       if (w.target.dead) {
         let best = null, bd = 1e9;
-        for (const e of g.entities) if (!e.dead && e.team === this.enemy) { const d = d2(e.pos, c) + (e.isBuilding ? 0 : 15); if (d < bd) { bd = d; best = e; } }
+        for (const e of g.entities) if (!e.dead && e.team !== this.team) { const d = d2(e.pos, c) + (e.isBuilding ? 0 : 15); if (d < bd) { bd = d; best = e; } }
         if (!best) { this.disband(w); continue; }
         w.target = best; this.issue(w);
       }

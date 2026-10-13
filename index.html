@@ -2,6 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e141c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Iron Dominion">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <title>Iron Dominion - three.js RTS</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
@@ -14,24 +23,47 @@
 <body>
 <div id="view"></div>
 <canvas id="overlay"></canvas>
-<div id="topbar">
-  <span>Credits: <b id="credits">0</b></span>
-  <span>Power: <b id="power">0</b></span>
-  <span>Time: <b id="clock">0:00</b></span>
-  <span>Renderer: <b id="renderer">...</b></span>
-  <span title="Q toggles graphics quality, N toggles damage numbers">[Q] quality · [N] dmg numbers: <b id="dmgToggle">on</b></span>
+<div id="hud">
+  <div id="topbar">
+    <span>💲 <b id="credits">0</b></span>
+    <span>⚡ <b id="power">0</b></span>
+    <span>⏱ <b id="clock">0:00</b></span>
+    <span class="pts">★ <b id="points">0</b> <small id="mpts"></small></span>
+    <span class="desk">Renderer: <b id="renderer">...</b></span>
+    <span class="desk" title="Q quality, N damage numbers, X random disaster (debug)">[Q] quality · [N] dmg: <b id="dmgToggle">on</b> · [X] disaster</span>
+  </div>
+  <button id="sideToggle" class="fab" aria-label="Toggle build menu">🛠</button>
+  <button id="thoughtToggle" class="fab" aria-label="Toggle AI panel">🧠</button>
+  <button id="deselect" class="fab" aria-label="Deselect">✖</button>
+  <div id="sidebar">
+    <canvas id="minimap" width="200" height="200"></canvas>
+    <div class="hdr">Structures</div>
+    <div id="buildBtns" class="grid"></div>
+    <div class="hdr">Units <small>(right-click / long-press = cancel)</small></div>
+    <div id="unitBtns" class="grid"></div>
+    <div class="hdr">Selection</div>
+    <div id="selinfo">Nothing selected</div>
+  </div>
+  <div id="thought"><div class="hdr">Enemy AI brain</div><div id="thoughtBody">booting...</div></div>
 </div>
-<div id="sidebar">
-  <canvas id="minimap" width="200" height="200"></canvas>
-  <div class="hdr">Structures</div>
-  <div id="buildBtns" class="grid"></div>
-  <div class="hdr">Units <small>(right-click = cancel)</small></div>
-  <div id="unitBtns" class="grid"></div>
-  <div class="hdr">Selection</div>
-  <div id="selinfo">Nothing selected</div>
-</div>
-<div id="thought"><div class="hdr">Enemy AI brain</div><div id="thoughtBody">booting...</div></div>
+<div id="alert"></div>
+<div id="flash"></div>
+<div id="toast"></div>
 <div id="msg"></div>
+<div id="menu" class="hidden">
+  <div class="menu-card">
+    <h1>IRON DOMINION</h1>
+    <div class="menu-stats"><span>★ <b id="menuPoints">0</b> points</span><span>🔥 streak <b id="menuStreak">0</b></span><span id="menuRecord"></span></div>
+    <div class="menu-row"><label>AI opponents <select id="aiCount"><option>1</option><option>2</option><option>3</option></select></label></div>
+    <button class="big" id="btnSP">▶ Single Player</button>
+    <button class="big" id="btnHost">📡 Host Multiplayer</button>
+    <div class="menu-row join"><input id="joinCode" maxlength="5" placeholder="ROOM CODE" autocomplete="off"><button class="big" id="btnJoin">🔗 Join</button></div>
+    <div class="menu-row two"><button class="big" id="btnShop">⚙ Upgrades</button><button class="big" id="btnDaily">🎁 Daily Reward<span id="dailyDot"></span></button></div>
+    <div class="menu-row"><label>Name <input id="playerName" maxlength="16"></label><label><input type="checkbox" id="disastersOn" checked> Natural disasters</label></div>
+    <div id="menuMsg"></div>
+  </div>
+</div>
+<div id="modal" class="hidden"><div class="modal-card"><button class="close" id="modalClose">✕</button><div id="modalBody"></div></div></div>
 <div id="loading">Loading three.js...</div>
 <script type="module" src="js/main.js"></script>
 </body>

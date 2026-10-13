@@ -44,3 +44,16 @@ The weights start from hand-designed priors. For example, high threat pushes tow
 - No fog of war. No base defenses or turrets. No repair or selling.
 - The brain runs on the main thread, not a Web Worker. It is tiny, so this is cheap.
 - Balance is rough.
+
+## Phase 2 features
+- **Main menu**: Single Player (1-3 AI), Host / Join multiplayer, Upgrades, Daily Reward.
+- **Points** (★): earned from kills, harvesting, wins (and losses), and daily rewards. Saved in localStorage.
+- **Daily login streak**: based on calendar days, with rewards escalating over a 7-day cycle (+100 per completed week).
+- **Upgrade shop**: Tank Mk II/III evolution, infantry training, weapon systems, harvest rate, building armor and a war chest. Upgrades are permanent.
+- **Natural disasters**: earthquake, lightning storm, flash flood and meteor (which leaves a crater that deforms the terrain). They trigger at random every ~2-3 minutes; `X` triggers one for debugging.
+- **Multiplayer**: PeerJS WebRTC with a 5-letter room code and 2-4 players free-for-all. AI fills empty slots. The host is authoritative (snapshots at 10 Hz, clients send commands).
+- **Mobile / PWA**:
+  - Touch controls: tap to select or command, long-press-drag for box select, one- or two-finger pan, pinch to zoom.
+  - Collapsible build drawer.
+  - Installable as an app via `manifest.json` + `sw.js`.
+- **Portraits**: every build button and the selection panel show the real 3D model, rendered at startup.

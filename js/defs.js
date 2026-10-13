@@ -1,4 +1,6 @@
-export const TEAM_COLORS = [0x3a7bd5, 0xc0392b];
+export const TEAM_COLORS = [0x3a7bd5, 0xc0392b, 0x2e9e4f, 0xd4a017];
+export const TEAM_NAMES = ['Blue', 'Red', 'Green', 'Gold'];
+export const TEAM_CSS = ['#4aa3ff', '#ff4a3a', '#3fd06a', '#ffcc33'];
 export const BUILD = {
   cy:       { name: 'Construction Yard', cost: 0,    hp: 2000, r: 4.2, power: 30,  time: 1 },
   power:    { name: 'Power Plant',       cost: 300,  hp: 600,  r: 2.7, power: 100, time: 6 },

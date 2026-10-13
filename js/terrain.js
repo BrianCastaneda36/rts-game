@@ -2,7 +2,8 @@ import { THREE } from './T.js';
 import { groundNormal, waterNormal, barkTex, foliageTex, grassBladeTex, hash2 } from './textures.js';
 import { merge } from './geom.js';
 export const MAP = 200, HALF = 100;
-export const BASES = [{ x: -60, z: 60 }, { x: 60, z: -60 }];
+export const BASES = [{ x: -60, z: 60 }, { x: 60, z: -60 }, { x: 60, z: 60 }, { x: -60, z: -60 }];
+export const CRATERS = [];
 export const ORE_FIELDS = [{ x: -36, z: 36 }, { x: 36, z: -36 }, { x: 0, z: 0 }, { x: -55, z: -30 }, { x: 55, z: 30 }];
 
 export function hash(i, j) { let h = (i * 374761393 + j * 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; }
@@ -21,7 +22,9 @@ export function heightAt(x, z) {
   let flat = 0;
   for (const b of BASES) flat = Math.max(flat, 1 - sstep(24, 36, Math.hypot(x - b.x, z - b.z)));
   for (const o of ORE_FIELDS) flat = Math.max(flat, (1 - sstep(8, 16, Math.hypot(x - o.x, z - o.z))) * 0.75);
-  return h * (1 - flat) + 1 * flat;
+  h = h * (1 - flat) + 1 * flat;
+  for (const c of CRATERS) { const d = Math.hypot(x - c.x, z - c.z); if (d < c.r * 1.35) { const k = d / c.r; h += k < 1 ? -c.depth * (1 - k * k) : c.depth * 0.35 * Math.sin((k - 1) / 0.35 * Math.PI); } }
+  return h;
 }
 
 export function colorAt(h, x, z) {
@@ -137,7 +140,7 @@ export class Terrain {
       const im = new THREE.InstancedMesh(geom, material, pts.length);
       pts.forEach(([x, z], i) => { fn(x, z, i); m4.compose(p, q, s); im.setMatrixAt(i, m4); if (im.instanceColor !== undefined) im.setColorAt(i, col); });
       im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
-      im.castShadow = shadow; im.receiveShadow = true; scene.add(im); return im;
+      im.castShadow = shadow; im.receiveShadow = true; scene.add(im); (this.instanced = this.instanced || []).push(im); return im;
     };
     const bark = new THREE.MeshStandardMaterial({ map: barkTex(), roughness: 0.95 });
     const fol = new THREE.MeshStandardMaterial({ map: foliageTex(), roughness: 0.85, flatShading: true });
@@ -169,6 +172,15 @@ export class Terrain {
     const grassM = new THREE.MeshStandardMaterial({ map: grassBladeTex(), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.9 });
     const gPts = place(7000, 6, 7, (x, z) => { const h = heightAt(x, z); return h > -1.0 && h < 8 && slopeAt(x, z) < 0.6 && nearBase(x, z) > 27; });
     this.grass = inst(tuft, grassM, gPts, (x, z, i) => { const k = 0.6 + hash2(i, 1, 17) * 0.8; p.set(x, heightAt(x, z) - 0.05, z); e.set(0, hash2(i, 2, 17) * 6.28, 0); q.setFromEuler(e); s.set(k, k * (0.7 + hash2(i, 3, 17) * 0.7), k); col.setHSL(0.2 + hash2(i, 4, 17) * 0.07, 0.45, 0.42 + hash2(i, 5, 17) * 0.15); }, false);
+  }
+  addCrater(x, z, r, depth) {
+    CRATERS.push({ x, z, r, depth });
+    const pos = this.mesh.geometry.attributes.position, R = r * 1.4;
+    for (let i = 0; i < pos.count; i++) { const px = pos.getX(i), pz = pos.getZ(i); if (Math.abs(px - x) < R && Math.abs(pz - z) < R) pos.setY(i, heightAt(px, pz)); }
+    pos.needsUpdate = true; this.mesh.geometry.computeVertexNormals();
+    // remove vegetation inside the crater
+    const m4 = new THREE.Matrix4(), v = new THREE.Vector3(), zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (const im of this.instanced) { let ch = false; for (let i = 0; i < im.count; i++) { im.getMatrixAt(i, m4); v.setFromMatrixPosition(m4); if (Math.hypot(v.x - x, v.z - z) < R) { im.setMatrixAt(i, zero); ch = true; } } if (ch) im.instanceMatrix.needsUpdate = true; }
   }
   update(dt, t) {
     const n = this.waterMat.normalMap; n.offset.x = t * 0.012; n.offset.y = t * 0.007;
