@@ -168,7 +168,7 @@ export class Terrain {
     const tuft = merge([blade, b2, b3]);
     const grassM = new THREE.MeshStandardMaterial({ map: grassBladeTex(), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.9 });
     const gPts = place(7000, 6, 7, (x, z) => { const h = heightAt(x, z); return h > -1.0 && h < 8 && slopeAt(x, z) < 0.6 && nearBase(x, z) > 27; });
-    inst(tuft, grassM, gPts, (x, z, i) => { const k = 0.6 + hash2(i, 1, 17) * 0.8; p.set(x, heightAt(x, z) - 0.05, z); e.set(0, hash2(i, 2, 17) * 6.28, 0); q.setFromEuler(e); s.set(k, k * (0.7 + hash2(i, 3, 17) * 0.7), k); col.setHSL(0.2 + hash2(i, 4, 17) * 0.07, 0.45, 0.42 + hash2(i, 5, 17) * 0.15); }, false);
+    this.grass = inst(tuft, grassM, gPts, (x, z, i) => { const k = 0.6 + hash2(i, 1, 17) * 0.8; p.set(x, heightAt(x, z) - 0.05, z); e.set(0, hash2(i, 2, 17) * 6.28, 0); q.setFromEuler(e); s.set(k, k * (0.7 + hash2(i, 3, 17) * 0.7), k); col.setHSL(0.2 + hash2(i, 4, 17) * 0.07, 0.45, 0.42 + hash2(i, 5, 17) * 0.15); }, false);
   }
   update(dt, t) {
     const n = this.waterMat.normalMap; n.offset.x = t * 0.012; n.offset.y = t * 0.007;

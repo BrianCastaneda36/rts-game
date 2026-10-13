@@ -30,6 +30,8 @@ export class Game {
     Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 320 }); sun.shadow.camera.updateProjectionMatrix();
     scene.add(sun); scene.add(sun.target);
     this.fx = new FX(scene);
+    this.shakeAmt = 0; this.dmgNums = []; this.showDmg = true; this.quality = 'High';
+    this.fx.onBoom = (pos, size) => { const d = Math.hypot(pos.x - this.camTarget.x, pos.z - this.camTarget.z); this.addShake(size * 0.55 * Math.max(0, 1 - d / (40 + this.camDist * 0.6))); };
     this.camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 1200);
     this.camTarget = new THREE.Vector3(BASES[0].x + 12, 0, BASES[0].z - 12); this.camDist = 65;
     this.terrain = new Terrain(scene);
@@ -261,6 +263,8 @@ export class Game {
     this.projectiles.push({ mesh: m, target: t, attacker: u, team: u.team, dmg: u.def.dmg, weapon: u.def.weapon, P, aim: t.pos.clone() });
     const dir = new THREE.Vector3(t.pos.x - u.pos.x, 0, t.pos.z - u.pos.z).normalize();
     this.fx.muzzle(m.position, dir, u.def.weapon !== 'bullet');
+    if (u.type === 'rifle') this.fx.casing(new THREE.Vector3(u.pos.x, u.pos.y + 0.9, u.pos.z), dir.x, dir.z);
+    if (u.type === 'tank') { this.fx.casing(new THREE.Vector3(u.pos.x, u.pos.y + 1.4, u.pos.z), -dir.x, -dir.z); this.fx.onBoom(u.pos, 0.35); }
   }
   updateProjectiles(dt) {
     for (const p of this.projectiles) {
@@ -271,7 +275,9 @@ export class Game {
       if (p.weapon !== 'bullet') { p.tr = (p.tr || 0) + dt; if (p.tr > 0.025) { p.tr = 0; this.fx.trail(pos, p.weapon === 'rocket'); } }
       if (L <= step) {
         p.done = true; this.scene.remove(p.mesh);
-        if (p.weapon === 'bullet') this.fx.explosion(p.aim, 0.25, { scorch: false }); else this.fx.explosion(p.aim, p.P.boom * 0.7, { debris: 2 });
+        const arm = p.target.dead ? 'ground' : p.target.isBuilding ? 'bld' : p.target.def.armor;
+        this.fx.impact(p.aim, p.weapon, arm);
+        if (p.weapon !== 'bullet') this.fx.explosion(p.aim, p.P.boom * (p.weapon === 'shell' ? 0.85 : 0.7), { debris: arm === 'veh' || arm === 'bld' ? 4 : 2 });
         if (!p.target.dead) {
           const arm = p.target.isBuilding ? 'bld' : p.target.def.armor;
           this.damage(p.target, p.dmg * MULT[p.weapon][arm] * (0.8 + Math.random() * 0.4), p.attacker, p.team);
@@ -282,15 +288,18 @@ export class Game {
   }
   damage(t, amt, attacker, team) {
     if (t.dead) return;
-    t.hp -= amt; this.teams[team].dealt += amt; this.teams[t.team].taken += amt; t.lastHit = this.time;
+    t.hp -= amt; this.teams[team].dealt += amt;
+    this.fx.hitFlash(t.mesh); if (this.showDmg) { this.dmgNums.push({ x: t.pos.x + (Math.random() - .5), y: t.pos.y + (t.isBuilding ? 4 : 2), z: t.pos.z + (Math.random() - .5), amt: Math.round(amt), t: 0, big: amt >= 30 }); if (this.dmgNums.length > 60) this.dmgNums.shift(); } this.teams[t.team].taken += amt; t.lastHit = this.time;
     if (!t.isBuilding && t.type !== 'harvester' && !t.target && attacker && !attacker.dead && (t.team === 1 || this.time - t.orderTime > 3)) { t.target = attacker; t.chase = false; }
     if (t.hp <= 0) this.kill(t);
   }
   kill(e) {
-    e.dead = true; this.scene.remove(e.mesh); this.selected.delete(e);
-    const veh = !e.isBuilding && e.def.armor === 'veh';
-    this.fx.explosion(e.pos, e.isBuilding ? e.r * 0.9 : (veh ? 1.8 : 0.6), { debris: e.isBuilding ? 24 : veh ? 12 : 0 });
-    if (e.isBuilding) for (let i = 0; i < 5; i++) this.fx.explosion(new THREE.Vector3(e.pos.x + (Math.random() - .5) * e.r * 2, e.pos.y + 1, e.pos.z + (Math.random() - .5) * e.r * 2), 1.6, { debris: 3 });
+    e.dead = true; this.selected.delete(e);
+    const veh = !e.isBuilding && e.def.armor === 'veh', ud = e.mesh.userData;
+    if (ud.orig) { for (const [o, m] of ud.orig) o.material = m; ud.orig = null; }
+    if (e.isBuilding) { this.fx.explosion(e.pos, e.r * 0.9, { debris: 30 }); this.fx.wreck(e.mesh, 'bld', e); }
+    else if (veh) { this.fx.explosion(e.pos, 1.9, { debris: 14 }); this.fx.wreck(e.mesh, 'veh', e); }
+    else { for (let i = 0; i < 4; i++) this.fx.dust(e.pos, 0.4); this.fx.wreck(e.mesh, 'inf', e); }
     if (e.wave) this.commander.removeFromWave(e);
   }
   makeProjectile(w) {
@@ -336,7 +345,7 @@ export class Game {
     if (!this.over) this.update(dt); else this.updateEffects(dt);
     this.updateCamera(dt); this.updateGhost(); this.updateVisuals(dt);
     this.renderer.render(this.scene, this.camera);
-    this.ui.update(dt); this.ui.drawOverlay();
+    this.ui.update(dt); this.ui.drawOverlay(); if (this.showDmg) this.drawDamageNumbers(dt); else this.dmgNums.length = 0;
   }
 
   // ---------- visuals only (no gameplay state is touched here) ----------
@@ -348,6 +357,11 @@ export class Game {
       const sp = dt > 0 ? Math.hypot(e.pos.x - lp.x, e.pos.z - lp.z) / dt : 0; lp.copy(e.pos);
       ud.spd = (ud.spd || 0) + (sp - (ud.spd || 0)) * Math.min(1, dt * 10);
       if (ud.animate) ud.animate(dt, { t: vt, speed: ud.spd, e });
+      if (ud.flashT > 0) {
+        if (!ud.orig) { ud.orig = []; e.mesh.traverse(o => { if (o.isMesh && o !== ud.ring) { ud.orig.push([o, o.material]); o.material = fx.flashMat; } }); }
+        ud.flashT -= dt; if (ud.flashT <= 0) { for (const [o, m] of ud.orig) o.material = m; ud.orig = null; }
+      }
+      if (e.hp < e.maxHp * 0.75 && !e.constructing && Math.random() < dt * (e.hp < e.maxHp * 0.4 ? 5 : 1.5)) fx.spark(new THREE.Vector3(e.pos.x, e.pos.y + (e.isBuilding ? 1.5 : 0.5), e.pos.z), e.r * 0.7);
       if (e.isBuilding && e.constructing) { if (Math.random() < dt * 10) fx.dust(e.pos, e.r); if (Math.random() < dt * 8) fx.spark(e.pos, e.r * 0.8); }
       else if (ud.smoke && ud.smoke.length) fx.emit(e.mesh, ud.smoke, dt, e.type === 'harvester' ? 0.4 + Math.min(1, ud.spd / 3) : 1);
       if (!e.isBuilding && e.def.armor === 'veh' && ud.spd > 1 && Math.random() < dt * 6) fx.dust(e.pos, 0.6);
@@ -367,6 +381,25 @@ export class Game {
     if (sc.right !== ext) { sc.left = sc.bottom = -ext; sc.right = sc.top = ext; sc.updateProjectionMatrix(); }
   }
 
+  addShake(a) { this.shakeAmt = Math.min(2.5, this.shakeAmt + a); }
+  setQuality(q) {
+    this.quality = q; const hi = q === 'High';
+    this.sun.castShadow = hi; this.fx.mult = hi ? 1 : 0.5; this.fx.quality = hi ? 1 : 0.5;
+    if (this.terrain.grass) this.terrain.grass.visible = hi;
+    this.renderer.setPixelRatio(hi ? Math.min(window.devicePixelRatio, 2) : 1); this.resize();
+    this.ui.flash && this.ui.flash(`Quality: ${q}`);
+  }
+  drawDamageNumbers(dt) {
+    const c = this.ui.octx; if (!this.dmgNums.length) return;
+    c.save(); c.textAlign = 'center'; c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,0.75)';
+    for (const d of this.dmgNums) {
+      d.t += dt; const p = this.project({ x: d.x, y: d.y + d.t * 2.2, z: d.z }); if (p.z > 1) continue;
+      c.globalAlpha = Math.max(0, 1 - d.t / 1.1); c.font = `bold ${d.big ? 18 : 13}px sans-serif`; c.fillStyle = d.big ? '#ffb030' : '#fff2c0';
+      c.strokeText(d.amt, p.x, p.y); c.fillText(d.amt, p.x, p.y);
+    }
+    c.restore(); this.dmgNums = this.dmgNums.filter(d => d.t < 1.1);
+  }
+
   // ---------- camera & input ----------
   updateCamera(dt) {
     let px = 0, pz = 0; const k = this.keys, m = this.mouse;
@@ -376,6 +409,7 @@ export class Game {
     t.x = Math.max(-95, Math.min(95, t.x + px * sp)); t.z = Math.max(-95, Math.min(95, t.z + pz * sp));
     const pitch = 0.95; this.camera.position.set(t.x, 1 + this.camDist * Math.sin(pitch), t.z + this.camDist * Math.cos(pitch));
     this.camera.lookAt(t.x, 1, t.z);
+    if (this.shakeAmt > 0.001) { const a = this.shakeAmt * this.shakeAmt * 0.6; this.camera.position.x += (Math.random() - .5) * a; this.camera.position.y += (Math.random() - .5) * a; this.camera.position.z += (Math.random() - .5) * a; this.camera.rotation.z += (Math.random() - .5) * a * 0.01; this.shakeAmt *= Math.max(0, 1 - dt * 6); }
   }
   resize() { this.renderer.setSize(innerWidth, innerHeight); this.camera.aspect = innerWidth / innerHeight; this.camera.updateProjectionMatrix(); this.ui.resize(); }
   groundAt(sx, sy) { this.raycaster.setFromCamera(new THREE.Vector2(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1), this.camera); return rayGround(this.raycaster.ray); }
@@ -454,6 +488,8 @@ export class Game {
       this.keys[e.code] = true;
       if (e.code.startsWith('Arrow')) e.preventDefault();
       if (e.code === 'Escape') { this.cancelPlacing(); this.setSel([], false); }
+      if (e.code === 'KeyQ') this.setQuality(this.quality === 'High' ? 'Low' : 'High');
+      if (e.code === 'KeyN') { this.showDmg = !this.showDmg; const el = document.getElementById('dmgToggle'); if (el) el.textContent = this.showDmg ? 'on' : 'off'; }
       if (e.code === 'KeyH') { const b = this.basePos(0); this.camTarget.set(b.x, 0, b.z); }
     });
     window.addEventListener('keyup', e => { this.keys[e.code] = false; });
