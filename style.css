@@ -1,0 +1,21 @@
+html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:system-ui,sans-serif;color:#dfe6ee;user-select:none}
+#view canvas{display:block;position:fixed;left:0;top:0}
+#overlay{position:fixed;left:0;top:0;pointer-events:none}
+#topbar{position:fixed;left:0;top:0;right:230px;height:28px;background:rgba(10,15,22,.8);display:flex;gap:24px;align-items:center;padding:0 12px;font-size:14px}
+#sidebar{position:fixed;right:0;top:0;bottom:0;width:230px;background:#141b24;border-left:2px solid #2d3b4d;padding:8px;box-sizing:border-box;overflow-y:auto}
+#minimap{width:212px;height:212px;border:1px solid #3a4b60;cursor:crosshair;display:block}
+.hdr{font-size:12px;text-transform:uppercase;color:#8fb0d0;margin:8px 0 4px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.btn{position:relative;background:#22303f;border:1px solid #3f5670;padding:6px 4px;font-size:12px;text-align:center;cursor:pointer;border-radius:3px;overflow:hidden}
+.btn:hover{background:#2d4157}
+.btn.dis{opacity:.4;cursor:not-allowed}
+.btn.active{outline:2px solid #6cf}
+.btn .cost{color:#ffd76a;font-size:11px}
+.btn .prog{position:absolute;left:0;bottom:0;height:3px;background:#5f5;width:0}
+.btn .q{position:absolute;right:3px;top:2px;color:#6cf;font-weight:bold}
+#selinfo{font-size:12px;line-height:1.5}
+#thought{position:fixed;left:8px;bottom:8px;width:330px;background:rgba(30,8,8,.82);border:1px solid #7a3030;padding:6px 8px;font-size:12px;line-height:1.4}
+#thought .bar{display:inline-block;height:8px;background:#e55;vertical-align:middle;margin-left:4px}
+#msg{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);font-size:44px;font-weight:bold;text-shadow:0 0 10px #000;display:none;text-align:center}
+#msg button{font-size:18px;margin-top:12px}
+#loading{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font-size:22px}
